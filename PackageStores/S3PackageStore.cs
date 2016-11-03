@@ -21,6 +21,7 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
     [DisplayName("Amazon S3")]
     [Description("A package store backed by Amazon S3.")]
     [CustomEditor(typeof(S3PackageStoreEditor))]
+    [PersistFrom("Inedo.ProGet.Extensions.PackageStores.S3.S3PackageStore,ProGetCoreEx")]
     public sealed partial class S3PackageStore : CommonIndexedPackageStore
     {
         private Lazy<AmazonS3Client> client;
