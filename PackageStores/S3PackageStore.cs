@@ -1,6 +1,11 @@
-﻿using System;
-using System.Collections;
-using System.Collections.Concurrent;
+﻿using Amazon.S3;
+using Amazon.S3.Model;
+using Inedo.Documentation;
+using Inedo.IO;
+using Inedo.ProGet.Extensibility.PackageStores;
+using Inedo.ProGet.Web.Controls.Extensions;
+using Inedo.Serialization;
+using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
@@ -8,13 +13,6 @@ using System.Linq;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
-using Amazon.S3;
-using Amazon.S3.Model;
-using Inedo.Documentation;
-using Inedo.IO;
-using Inedo.ProGet.Extensibility.PackageStores;
-using Inedo.ProGet.Web.Controls.Extensions;
-using Inedo.Serialization;
 
 namespace Inedo.ProGet.Extensions.Amazon.PackageStores
 {
@@ -24,12 +22,12 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
     [PersistFrom("Inedo.ProGet.Extensions.PackageStores.S3.S3PackageStore,ProGetCoreEx")]
     public sealed partial class S3PackageStore : CommonIndexedPackageStore
     {
-        private Lazy<AmazonS3Client> client;
+        private readonly LazyDisposableAsync<AmazonS3Client> client;
         private bool disposed;
 
         public S3PackageStore()
         {
-            this.client = new Lazy<AmazonS3Client>(this.CreateClient);
+            this.client = new LazyDisposableAsync<AmazonS3Client>(this.CreateClient, this.CreateClientAsync);
         }
 
         [Persistent]
@@ -80,10 +78,7 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
             {
                 if (disposing)
                 {
-                    if (this.client.IsValueCreated)
-                        this.client.Value.Dispose();
-
-                    this.client = null;
+                    this.client.Dispose();
                 }
 
                 this.disposed = true;
@@ -96,7 +91,8 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
         {
             try
             {
-                var metadata = await this.client.Value.GetObjectMetadataAsync(
+                var client = await this.client.ValueAsync.ConfigureAwait(false);
+                var metadata = await client.GetObjectMetadataAsync(
                     new GetObjectMetadataRequest
                     {
                         BucketName = this.BucketName,
@@ -118,14 +114,15 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
 
             return Task.FromResult<Stream>(new UploadStream(this, path));
         }
-        protected override Task DeleteAsync(string path)
+        protected override async Task DeleteAsync(string path)
         {
             if (string.IsNullOrEmpty(path))
                 throw new ArgumentNullException(nameof(path));
             if (this.disposed)
                 throw new ObjectDisposedException(nameof(S3PackageStore));
 
-            return this.client.Value.DeleteObjectAsync(new DeleteObjectRequest { BucketName = this.BucketName, Key = path });
+            var client = await this.client.ValueAsync.ConfigureAwait(false);
+            await client.DeleteObjectAsync(new DeleteObjectRequest { BucketName = this.BucketName, Key = path }).ConfigureAwait(false);
         }
         protected override async Task RenameAsync(string originalName, string newName)
         {
@@ -137,7 +134,9 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
             if (string.Equals(originalName, newName, StringComparison.OrdinalIgnoreCase))
                 return;
 
-            await this.client.Value.CopyObjectAsync(
+            var client = await this.client.ValueAsync.ConfigureAwait(false);
+
+            await client.CopyObjectAsync(
                 new CopyObjectRequest
                 {
                     SourceBucket = this.BucketName,
@@ -149,116 +148,48 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
 
             await this.DeleteAsync(originalName).ConfigureAwait(false);
         }
-        protected override Task<IEnumerable<string>> EnumerateFilesAsync(string extension) => this.EnumerateFilesInternalAsync(string.Empty);
+        protected override Task<IEnumerable<string>> EnumerateFilesAsync(string extension) => this.EnumerateFilesInternalAsync(string.Empty, extension);
         protected override string GetFullPackagePath(PackageStorePackageId packageId) => this.Prefix + this.GetRelativePackagePath(packageId, '/');
 
         private async Task<IEnumerable<string>> EnumerateFilesInternalAsync(string directory, string extension = null)
         {
-            var response = await this.client.Value.ListObjectsAsync(new ListObjectsRequest { BucketName = this.BucketName, Prefix = this.Prefix + directory }).ConfigureAwait(false);
-            if (!response.IsTruncated)
-            {
-                if (!string.IsNullOrEmpty(extension))
-                    return response.S3Objects.Where(o => o.Key.EndsWith(extension, StringComparison.OrdinalIgnoreCase)).Select(o => o.Key);
-                else
-                    return response.S3Objects.Select(o => o.Key);
-            }
+            var client = await this.client.ValueAsync.ConfigureAwait(false);
 
-            if (!string.IsNullOrEmpty(extension))
-            {
-                return new BackgroundEnumerator(
-                    response.S3Objects.Where(o => o.Key.EndsWith(extension, StringComparison.OrdinalIgnoreCase)).Select(o => o.Key),
-                    c => this.EnumerateFilesBackgroundAsync(c, response.NextMarker, extension)
-                );
-            }
-            else
-            {
-                return new BackgroundEnumerator(
-                    response.S3Objects.Select(o => o.Key),
-                    c => this.EnumerateFilesBackgroundAsync(c, response.NextMarker, extension)
-                );
-            }
-        }
-        private async Task EnumerateFilesBackgroundAsync(BlockingCollection<string> collection, string marker, string extension)
-        {
-            try
-            {
-                while (true)
+            var prefix = this.Prefix + directory;
+            var files = Enumerable.Empty<S3Object>();
+            var response = await client.ListObjectsAsync(
+                new ListObjectsRequest
                 {
-                    var response = await this.client.Value.ListObjectsAsync(
-                        new ListObjectsRequest
-                        {
-                            BucketName = this.BucketName,
-                            Prefix = this.Prefix,
-                            Marker = marker
-                        }
-                    ).ConfigureAwait(false);
-
-                    if (!string.IsNullOrEmpty(extension))
-                    {
-                        foreach (var obj in response.S3Objects.Where(o => o.Key.EndsWith(extension, StringComparison.OrdinalIgnoreCase)))
-                            collection.Add(obj.Key);
-                    }
-                    else
-                    {
-                        foreach (var obj in response.S3Objects)
-                            collection.Add(obj.Key);
-                    }
-
-                    if (response.IsTruncated)
-                        break;
-
-                    marker = response.NextMarker;
+                    BucketName = this.BucketName,
+                    Prefix = prefix,
                 }
-            }
-            catch
+            ).ConfigureAwait(false);
+
+            while (true)
             {
-            }
-            finally
-            {
-                collection.CompleteAdding();
+                files = files.Concat(response.S3Objects);
+
+                if (!response.IsTruncated)
+                {
+                    var names = files.Select(o => o.Key);
+                    if (!string.IsNullOrEmpty(extension))
+                        names = names.Where(n => n.EndsWith(extension, StringComparison.OrdinalIgnoreCase));
+                    return names;
+                }
+
+                response = await client.ListObjectsAsync(
+                    new ListObjectsRequest
+                    {
+                        BucketName = this.BucketName,
+                        Prefix = prefix,
+                        Marker = response.NextMarker,
+                    }
+                ).ConfigureAwait(false);
             }
         }
 
         private AmazonS3Client CreateClient() => new AmazonS3Client(this.AccessKey, this.SecretAccessKey, global::Amazon.RegionEndpoint.GetBySystemName(this.RegionEndpoint));
-
-        private sealed class BackgroundEnumerator : IEnumerable<string>, IEnumerator<string>
-        {
-            private BlockingCollection<string> collection = new BlockingCollection<string>();
-            private IEnumerator<string> enumerator;
-
-            public BackgroundEnumerator(IEnumerable<string> initialItems, Func<BlockingCollection<string>, Task> getItemsAsync)
-            {
-                foreach (var item in initialItems)
-                    this.collection.Add(item);
-
-                Task.Run(() => getItemsAsync(this.collection));
-            }
-
-            public string Current => this.enumerator?.Current;
-
-            object IEnumerator.Current => this.Current;
-
-            public void Dispose()
-            {
-                this.enumerator?.Dispose();
-                this.collection?.Dispose();
-            }
-
-            public IEnumerator<string> GetEnumerator()
-            {
-                if (this.enumerator != null)
-                    throw new InvalidOperationException();
-
-                return this.enumerator = this.collection.GetConsumingEnumerable().GetEnumerator();
-            }
-
-            IEnumerator IEnumerable.GetEnumerator() => this.GetEnumerator();
-            bool IEnumerator.MoveNext() => this.enumerator.MoveNext();
-            void IEnumerator.Reset()
-            {
-                throw new NotSupportedException();
-            }
-        }
+        private Task<AmazonS3Client> CreateClientAsync() => Task.Run(() => this.CreateClient());
 
         private sealed class DownloadStream : Stream
         {
@@ -306,45 +237,29 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
             }
             public override int Read(byte[] buffer, int offset, int count)
             {
-                count = (int)Math.Min(count, this.Length - this.Position);
-                if (count == 0)
-                    return 0;
-
-                using (var obj = this.store.client.Value.GetObject(new GetObjectRequest { BucketName = this.store.BucketName, Key = this.key, ByteRange = new ByteRange(this.Position, this.Position + count) }))
-                using (var remoteStream = obj.ResponseStream)
-                {
-                    int totalRead = 0;
-
-                    int read = remoteStream.Read(buffer, offset, count);
-                    while (read > 0)
-                    {
-                        totalRead += read;
-                        this.Position += read;
-                        read = remoteStream.Read(buffer, offset + totalRead, count - totalRead);
-                    }
-
-                    return totalRead;
-                }
+                return this.ReadAsync(buffer, offset, count, CancellationToken.None).Result();
             }
             public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
             {
                 if (count == 0)
                     return 0;
 
-                using (var obj = await this.store.client.Value.GetObjectAsync(new GetObjectRequest { BucketName = this.store.BucketName, Key = this.key, ByteRange = new ByteRange(this.Position, this.Position + count) }).ConfigureAwait(false))
+                var client = await this.store.client.ValueAsync.ConfigureAwait(false);
+
+                using (var obj = await client.GetObjectAsync(
+                    new GetObjectRequest
+                    {
+                        BucketName = this.store.BucketName,
+                        Key = this.key,
+                        ByteRange = new ByteRange(this.Position, this.Position + count),
+                    }
+                ).ConfigureAwait(false))
                 using (var remoteStream = obj.ResponseStream)
                 {
-                    int totalRead = 0;
-
                     int read = await remoteStream.ReadAsync(buffer, offset, count, cancellationToken).ConfigureAwait(false);
-                    while (read > 0)
-                    {
-                        totalRead += read;
-                        this.Position += read;
-                        read = await remoteStream.ReadAsync(buffer, offset + totalRead, count - totalRead, cancellationToken).ConfigureAwait(false);
-                    }
+                    this.Position += read;
 
-                    return totalRead;
+                    return read;
                 }
             }
 
@@ -423,7 +338,7 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
             public override void WriteByte(byte value)
             {
                 if (this.disposed)
-                    throw new ObjectDisposedException(nameof(S3PackageStore));
+                    throw new ObjectDisposedException(nameof(UploadStream));
 
                 int bufferBytesRemaining = MaxPutSize - (int)this.currentPartStream.Length;
                 if (bufferBytesRemaining > 0)
@@ -433,31 +348,7 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
             }
             public override void Write(byte[] buffer, int offset, int count)
             {
-                if (buffer == null)
-                    throw new ArgumentNullException(nameof(buffer));
-                if (offset < 0 || offset > buffer.Length)
-                    throw new ArgumentOutOfRangeException(nameof(offset));
-                if (count < 0)
-                    throw new ArgumentOutOfRangeException(nameof(count));
-                if (offset + count > buffer.Length)
-                    throw new ArgumentException("The length of buffer is smaller than the sum of offset and count.");
-                if (this.disposed)
-                    throw new ObjectDisposedException(nameof(UploadStream));
-
-                int bytesWritten = 0;
-                while (bytesWritten < count)
-                {
-                    int bufferBytesRemaining = MaxPutSize - (int)this.currentPartStream.Length;
-                    if (bufferBytesRemaining == 0)
-                    {
-                        this.FlushMultipartBuffer();
-                        bufferBytesRemaining = MaxPutSize;
-                    }
-
-                    int bytesToWriteToBuffer = Math.Min(bufferBytesRemaining, count - bytesWritten);
-                    this.currentPartStream.Write(buffer, offset + bytesWritten, bytesToWriteToBuffer);
-                    bytesWritten += bytesToWriteToBuffer;
-                }
+                this.WriteAsync(buffer, offset, count, CancellationToken.None).WaitAndUnwrapExceptions();
             }
             public override async Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
             {
@@ -488,21 +379,6 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
                 }
             }
 
-            private void FlushMultipartBuffer()
-            {
-                if (this.parts.Count == 0)
-                {
-                    var result = this.outer.client.Value.InitiateMultipartUpload(this.GetInitiateMultipartRequest());
-                    this.uploadId = result.UploadId;
-                }
-
-                this.currentPartStream.Position = 0;
-                var uploadResult = this.outer.client.Value.UploadPart(this.GetUploadPartRequest());
-                this.parts.Add(new PartETag(uploadResult.PartNumber, uploadResult.ETag));
-
-                this.currentPartStream.Position = 0;
-                this.currentPartStream.SetLength(0);
-            }
             private async Task FlushMultipartBufferAsync(CancellationToken cancellationToken)
             {
                 if (this.parts.Count == 0)
@@ -540,7 +416,7 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
                 else
                 {
                     if (this.currentPartStream.Length > 0)
-                        this.FlushMultipartBuffer();
+                        this.FlushMultipartBufferAsync(CancellationToken.None).WaitAndUnwrapExceptions();
 
                     this.outer.client.Value.CompleteMultipartUpload(
                         new CompleteMultipartUploadRequest
