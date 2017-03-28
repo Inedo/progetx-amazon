@@ -57,14 +57,14 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
         private S3CannedACL CannedACL => this.MakePublic ? S3CannedACL.PublicRead : S3CannedACL.NoACL;
         private S3StorageClass StorageClass => this.ReducedRedundancy ? S3StorageClass.ReducedRedundancy : S3StorageClass.Standard;
         private ServerSideEncryptionMethod EncryptionMethod => this.Encrypted ? ServerSideEncryptionMethod.AES256 : ServerSideEncryptionMethod.None;
-        private string Prefix => string.IsNullOrEmpty(this.TargetPath) || this.TargetPath.EndsWith("/") ? this.TargetPath : (this.TargetPath + "/");
+        private string Prefix => string.IsNullOrEmpty(this.TargetPath) || this.TargetPath.EndsWith("/") ? this.TargetPath ?? string.Empty : (this.TargetPath + "/");
 
         public override RichDescription GetDescription()
         {
             var path = this.BucketName ?? string.Empty;
             if (!path.EndsWith("/"))
                 path += "/";
-            path += this.TargetPath?.Trim('/');
+            path += this.TargetPath?.Trim('/') ?? string.Empty;
 
             return new RichDescription(
                 new Hilite(path),
