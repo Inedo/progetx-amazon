@@ -11,6 +11,8 @@ using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -22,6 +24,9 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
     [PersistFrom("Inedo.ProGet.Extensions.PackageStores.S3.S3PackageStore,ProGetCoreEx")]
     public sealed partial class S3PackageStore : CommonIndexedPackageStore
     {
+        // http://docs.aws.amazon.com/AmazonS3/latest/dev/UsingMetadata.html, sections "Characters That Might Require Special Handling" and "Characters to Avoid"
+        private static readonly Regex UncleanPattern = new Regex(@"[&$\x00-\x1f\x7f@=;:+ ,?\\{^}%`\]""'>\[~<#|!]", RegexOptions.Compiled);
+
         private readonly LazyDisposableAsync<AmazonS3Client> client;
         private bool disposed;
 
@@ -149,7 +154,7 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
             await this.DeleteAsync(originalName).ConfigureAwait(false);
         }
         protected override Task<IEnumerable<string>> EnumerateFilesAsync(string extension) => this.EnumerateFilesInternalAsync(string.Empty, extension);
-        protected override string GetFullPackagePath(PackageStorePackageId packageId) => this.Prefix + this.GetRelativePackagePath(packageId, '/');
+        protected override string GetFullPackagePath(PackageStorePackageId packageId) => this.Prefix + this.CleanPath(this.GetRelativePackagePath(packageId, '/'));
 
         private async Task<IEnumerable<string>> EnumerateFilesInternalAsync(string directory, string extension = null)
         {
@@ -186,6 +191,12 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
                     }
                 ).ConfigureAwait(false);
             }
+        }
+
+        private string CleanPath(string path)
+        {
+            // Replace the "dirty" ASCII characters with an exclamation mark followed by two hex digits.
+            return UncleanPattern.Replace(path, m => "!" + ((byte)m.Value[0]).ToString("X2"));
         }
 
         private AmazonS3Client CreateClient() => new AmazonS3Client(this.AccessKey, this.SecretAccessKey, global::Amazon.RegionEndpoint.GetBySystemName(this.RegionEndpoint));
