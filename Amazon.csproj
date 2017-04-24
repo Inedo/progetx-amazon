@@ -31,26 +31,24 @@
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="AWSSDK.Core, Version=3.3.0.0, Culture=neutral, PublicKeyToken=885c28607f98e604, processorArchitecture=MSIL">
-      <HintPath>packages\AWSSDK.Core.3.3.2\lib\net45\AWSSDK.Core.dll</HintPath>
-      <Private>True</Private>
+      <HintPath>packages\AWSSDK.Core.3.3.13\lib\net45\AWSSDK.Core.dll</HintPath>
     </Reference>
     <Reference Include="AWSSDK.S3, Version=3.3.0.0, Culture=neutral, PublicKeyToken=885c28607f98e604, processorArchitecture=MSIL">
-      <HintPath>packages\AWSSDK.S3.3.3.1\lib\net45\AWSSDK.S3.dll</HintPath>
-      <Private>True</Private>
+      <HintPath>packages\AWSSDK.S3.3.3.5.13\lib\net45\AWSSDK.S3.dll</HintPath>
     </Reference>
-    <Reference Include="InedoLib, Version=460.1.0.0, Culture=neutral, PublicKeyToken=112cfb71329714a6, processorArchitecture=MSIL">
-      <HintPath>packages\Inedo.ProGet.SDK.4.6.0\lib\net45\InedoLib.dll</HintPath>
-      <SpecificVersion>False</SpecificVersion>
+    <Reference Include="AWSSDK.SecurityToken, Version=3.3.0.0, Culture=neutral, PublicKeyToken=885c28607f98e604, processorArchitecture=MSIL">
+      <HintPath>packages\AWSSDK.SecurityToken.3.3.1.5\lib\net45\AWSSDK.SecurityToken.dll</HintPath>
+    </Reference>
+    <Reference Include="InedoLib, Version=478.1.0.0, Culture=neutral, PublicKeyToken=112cfb71329714a6, processorArchitecture=MSIL">
+      <HintPath>packages\Inedo.ProGet.SDK.4.6.1\lib\net45\InedoLib.dll</HintPath>
       <Private>False</Private>
     </Reference>
-    <Reference Include="ProGet.Web.Controls, Version=4.6.0.4, Culture=neutral, PublicKeyToken=20535527eaf4e568, processorArchitecture=MSIL">
-      <HintPath>packages\Inedo.ProGet.SDK.4.6.0\lib\net45\ProGet.Web.Controls.dll</HintPath>
-      <SpecificVersion>False</SpecificVersion>
+    <Reference Include="ProGet.Web.Controls, Version=4.6.0.32, Culture=neutral, PublicKeyToken=20535527eaf4e568, processorArchitecture=MSIL">
+      <HintPath>packages\Inedo.ProGet.SDK.4.6.1\lib\net45\ProGet.Web.Controls.dll</HintPath>
       <Private>False</Private>
     </Reference>
-    <Reference Include="ProGetCore, Version=4.6.0.4, Culture=neutral, PublicKeyToken=20535527eaf4e568, processorArchitecture=MSIL">
-      <HintPath>packages\Inedo.ProGet.SDK.4.6.0\lib\net45\ProGetCore.dll</HintPath>
-      <SpecificVersion>False</SpecificVersion>
+    <Reference Include="ProGetCore, Version=4.6.0.32, Culture=neutral, PublicKeyToken=20535527eaf4e568, processorArchitecture=MSIL">
+      <HintPath>packages\Inedo.ProGet.SDK.4.6.1\lib\net45\ProGetCore.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="System" />
@@ -72,7 +70,8 @@
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
-    <Analyzer Include="packages\AWSSDK.S3.3.3.1\analyzers\dotnet\cs\AWSSDK.S3.CodeAnalysis.dll" />
+    <Analyzer Include="packages\AWSSDK.S3.3.3.5.13\analyzers\dotnet\cs\AWSSDK.S3.CodeAnalysis.dll" />
+    <Analyzer Include="packages\AWSSDK.SecurityToken.3.3.1.5\analyzers\dotnet\cs\AWSSDK.SecurityToken.CodeAnalysis.dll" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <PropertyGroup>

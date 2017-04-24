@@ -1,5 +1,8 @@
 ﻿using Amazon.S3;
 using Amazon.S3.Model;
+using Amazon.SecurityToken;
+using Amazon.SecurityToken.Model;
+using Inedo.Diagnostics;
 using Inedo.Documentation;
 using Inedo.IO;
 using Inedo.ProGet.Extensibility.PackageStores;
@@ -11,7 +14,6 @@ using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Net;
-using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -59,7 +61,7 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
         [Persistent]
         public string RegionEndpoint { get; set; }
 
-        private S3CannedACL CannedACL => this.MakePublic ? S3CannedACL.PublicRead : S3CannedACL.NoACL;
+        private S3CannedACL CannedACL => this.MakePublic ? S3CannedACL.PublicRead : S3CannedACL.AuthenticatedRead;
         private S3StorageClass StorageClass => this.ReducedRedundancy ? S3StorageClass.ReducedRedundancy : S3StorageClass.Standard;
         private ServerSideEncryptionMethod EncryptionMethod => this.Encrypted ? ServerSideEncryptionMethod.AES256 : ServerSideEncryptionMethod.None;
         private string Prefix => string.IsNullOrEmpty(this.TargetPath) || this.TargetPath.EndsWith("/") ? this.TargetPath ?? string.Empty : (this.TargetPath + "/");
@@ -97,19 +99,56 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
             try
             {
                 var client = await this.client.ValueAsync.ConfigureAwait(false);
-                var metadata = await client.GetObjectMetadataAsync(
-                    new GetObjectMetadataRequest
-                    {
-                        BucketName = this.BucketName,
-                        Key = key
-                    }
-                ).ConfigureAwait(false);
-
-                return new BufferedStream(new DownloadStream(this, key, metadata.ContentLength), 64 * 1024);
+                using (var response = await client.GetObjectAsync(this.BucketName, key).ConfigureAwait(false))
+                {
+                    var stream = TemporaryStream.Create(response.ContentLength);
+                    await response.ResponseStream.CopyToAsync(stream).ConfigureAwait(false);
+                    stream.Position = 0;
+                    return stream;
+                }
             }
             catch (AmazonS3Exception ex) when (ex.StatusCode == HttpStatusCode.NotFound)
             {
                 return null;
+            }
+            catch (AmazonS3Exception ex) when (ex.StatusCode == HttpStatusCode.Forbidden && !this.MakePublic)
+            {
+                this.LogWarning($"Forbidden from downloading S3 object {this.BucketName}/{key}. Attempting to reset ACL.");
+                var client = await this.client.ValueAsync.ConfigureAwait(false);
+
+                try
+                {
+                    await client.PutACLAsync(new PutACLRequest
+                    {
+                        BucketName = this.BucketName,
+                        Key = key,
+                        CannedACL = this.CannedACL,
+                    }).ConfigureAwait(false);
+                }
+                catch (AmazonS3Exception ex1)
+                {
+                    Exception hint;
+
+                    try
+                    {
+                        hint = await this.GetPolicyHintAsync().ConfigureAwait(false);
+                    }
+                    catch (AmazonSecurityTokenServiceException ex2)
+                    {
+                        throw new AggregateException(ex, ex1, ex2);
+                    }
+
+                    throw new AggregateException("Due to a bug in a previous version of the Amazon package store, this package cannot be downloaded. Additionally, fixing the ACL failed.", hint, ex1, ex);
+                }
+
+                // Try again without catching exceptions.
+                using (var response = await client.GetObjectAsync(this.BucketName, key).ConfigureAwait(false))
+                {
+                    var stream = TemporaryStream.Create(response.ContentLength);
+                    await response.ResponseStream.CopyToAsync(stream).ConfigureAwait(false);
+                    stream.Position = 0;
+                    return stream;
+                }
             }
         }
         protected override Task<Stream> CreateAsync(string path)
@@ -148,6 +187,9 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
                     DestinationBucket = this.BucketName,
                     SourceKey = originalName,
                     DestinationKey = newName,
+                    CannedACL = this.CannedACL,
+                    ServerSideEncryptionMethod = this.EncryptionMethod,
+                    StorageClass = this.StorageClass,
                 }
             ).ConfigureAwait(false);
 
@@ -179,7 +221,7 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
                     var names = files.Select(o => o.Key);
                     if (!string.IsNullOrEmpty(extension))
                         names = names.Where(n => n.EndsWith(extension, StringComparison.OrdinalIgnoreCase));
-                    return names;
+                    return names.ToList();
                 }
 
                 response = await client.ListObjectsAsync(
@@ -202,85 +244,41 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
         private AmazonS3Client CreateClient() => new AmazonS3Client(this.AccessKey, this.SecretAccessKey, global::Amazon.RegionEndpoint.GetBySystemName(this.RegionEndpoint));
         private Task<AmazonS3Client> CreateClientAsync() => Task.Run(() => this.CreateClient());
 
-        private sealed class DownloadStream : Stream
+        private async Task<Exception> GetPolicyHintAsync()
         {
-            private S3PackageStore store;
-            private string key;
-
-            public DownloadStream(S3PackageStore store, string key, long length)
+            using (var sts = new AmazonSecurityTokenServiceClient(this.AccessKey, this.SecretAccessKey, global::Amazon.RegionEndpoint.GetBySystemName(this.RegionEndpoint)))
             {
-                this.store = store;
-                this.key = key;
-                this.Length = length;
-            }
+                var identity = await sts.GetCallerIdentityAsync(new GetCallerIdentityRequest()).ConfigureAwait(false);
 
-            public override bool CanRead => true;
-            public override bool CanSeek => true;
-            public override bool CanWrite => false;
+                var uniqueID = Guid.NewGuid().ToString("D");
+                return new Exception($@"The following auto-generated policy may allow ProGet to upload and download packages. An account administrator can add the policy to the bucket at https://console.aws.amazon.com/s3/buckets/{this.BucketName}/?tab=permissions
 
-            public override long Length { get; }
-            public override long Position { get; set; }
-
-            public override void Flush()
-            {
-            }
-            public override long Seek(long offset, SeekOrigin origin)
-            {
-                switch (origin)
-                {
-                    case SeekOrigin.Begin:
-                        this.Position = offset;
-                        break;
-
-                    case SeekOrigin.Current:
-                        this.Position += offset;
-                        break;
-
-                    case SeekOrigin.End:
-                        this.Position = this.Length + offset;
-                        break;
-
-                    default:
-                        throw new ArgumentOutOfRangeException(nameof(origin));
-                }
-
-                return this.Position;
-            }
-            public override int Read(byte[] buffer, int offset, int count)
-            {
-                return this.ReadAsync(buffer, offset, count, CancellationToken.None).Result();
-            }
-            public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
-            {
-                if (count == 0)
-                    return 0;
-
-                var client = await this.store.client.ValueAsync.ConfigureAwait(false);
-
-                using (var obj = await client.GetObjectAsync(
-                    new GetObjectRequest
-                    {
-                        BucketName = this.store.BucketName,
-                        Key = this.key,
-                        ByteRange = new ByteRange(this.Position, this.Position + count),
-                    }
-                ).ConfigureAwait(false))
-                using (var remoteStream = obj.ResponseStream)
-                {
-                    int read = await remoteStream.ReadAsync(buffer, offset, count, cancellationToken).ConfigureAwait(false);
-                    this.Position += read;
-
-                    return read;
-                }
-            }
-
-            public override void SetLength(long value)
-            {
-                throw new NotSupportedException();
-            }
-            public override void Write(byte[] buffer, int offset, int count)
-            {
-                throw new NotSupportedException();
+{{
+  ""Id"": ""ProGet{uniqueID}"",
+  ""Version"": ""2012-10-17"",
+  ""Statement"": [
+    {{
+      ""Sid"": ""ProGet{uniqueID}"",
+      ""Action"": [
+        ""s3:GetObject"",
+        ""s3:PutObject"",
+        ""s3:PutObjectAcl"",
+        ""s3:InitiateMultipartUpload"",
+        ""s3:UploadPart"",
+        ""s3:CompleteMultipartUpload"",
+        ""s3:ListObjects"",
+        ""s3:DeleteObject""
+      ],
+      ""Effect"": ""Allow"",
+      ""Resource"": ""arn:aws:s3:::{this.BucketName}/{this.Prefix}*"",
+      ""Principal"": {{
+        ""AWS"": [
+          ""{identity.Arn}""
+        ]
+      }}
+    }}
+  ]
+}}");
             }
         }
 
@@ -392,18 +390,26 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
 
             private async Task FlushMultipartBufferAsync(CancellationToken cancellationToken)
             {
-                if (this.parts.Count == 0)
+                try
                 {
-                    var result = await this.outer.client.Value.InitiateMultipartUploadAsync(this.GetInitiateMultipartRequest(), cancellationToken).ConfigureAwait(false);
-                    this.uploadId = result.UploadId;
+                    if (this.parts.Count == 0)
+                    {
+                        var result = await this.outer.client.Value.InitiateMultipartUploadAsync(this.GetInitiateMultipartRequest(), cancellationToken).ConfigureAwait(false);
+                        this.uploadId = result.UploadId;
+                    }
+
+                    this.currentPartStream.Position = 0;
+                    var uploadResult = await this.outer.client.Value.UploadPartAsync(this.GetUploadPartRequest(), cancellationToken).ConfigureAwait(false);
+                    this.parts.Add(new PartETag(uploadResult.PartNumber, uploadResult.ETag));
+
+                    this.currentPartStream.Position = 0;
+                    this.currentPartStream.SetLength(0);
                 }
-
-                this.currentPartStream.Position = 0;
-                var uploadResult = await this.outer.client.Value.UploadPartAsync(this.GetUploadPartRequest(), cancellationToken).ConfigureAwait(false);
-                this.parts.Add(new PartETag(uploadResult.PartNumber, uploadResult.ETag));
-
-                this.currentPartStream.Position = 0;
-                this.currentPartStream.SetLength(0);
+                catch (AmazonS3Exception ex) when (ex.StatusCode == HttpStatusCode.Forbidden)
+                {
+                    var hint = await this.outer.GetPolicyHintAsync().ConfigureAwait(false);
+                    throw new AggregateException("ProGet received an Access Denied response from Amazon S3. This may be due to access policies. A sample policy is listed with this exception in Recent Errors.", hint, ex);
+                }
             }
             private void FinalFlush()
             {
