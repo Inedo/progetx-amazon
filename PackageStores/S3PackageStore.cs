@@ -99,13 +99,8 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
             try
             {
                 var client = await this.client.ValueAsync.ConfigureAwait(false);
-                using (var response = await client.GetObjectAsync(this.BucketName, key).ConfigureAwait(false))
-                {
-                    var stream = TemporaryStream.Create(response.ContentLength);
-                    await response.ResponseStream.CopyToAsync(stream).ConfigureAwait(false);
-                    stream.Position = 0;
-                    return stream;
-                }
+                var response = await client.GetObjectAsync(this.BucketName, key).ConfigureAwait(false);
+                return new UsingStream(response.ResponseStream, response);
             }
             catch (AmazonS3Exception ex) when (ex.StatusCode == HttpStatusCode.NotFound)
             {
@@ -142,13 +137,8 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
                 }
 
                 // Try again without catching exceptions.
-                using (var response = await client.GetObjectAsync(this.BucketName, key).ConfigureAwait(false))
-                {
-                    var stream = TemporaryStream.Create(response.ContentLength);
-                    await response.ResponseStream.CopyToAsync(stream).ConfigureAwait(false);
-                    stream.Position = 0;
-                    return stream;
-                }
+                var response = await client.GetObjectAsync(this.BucketName, key).ConfigureAwait(false);
+                return new UsingStream(response.ResponseStream, response);
             }
         }
         protected override Task<Stream> CreateAsync(string path)
@@ -468,6 +458,69 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
                     PartNumber = this.parts.Count + 1,
                     InputStream = this.currentPartStream
                 };
+            }
+        }
+        private sealed class UsingStream : Stream
+        {
+            private Stream stream;
+            private IDisposable outer;
+
+            public UsingStream(Stream stream, IDisposable outer)
+            {
+                this.stream = stream;
+                this.outer = outer;
+            }
+
+            public override bool CanRead => this.stream.CanRead;
+            public override bool CanSeek => this.stream.CanSeek;
+            public override bool CanWrite => this.stream.CanWrite;
+            public override long Length => this.stream.Length;
+            public override long Position
+            {
+                get { return this.stream.Position; }
+                set { this.stream.Position = value; }
+            }
+
+            public override void Flush()
+            {
+                this.stream.Flush();
+            }
+
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                return this.stream.Read(buffer, offset, count);
+            }
+
+            public override long Seek(long offset, SeekOrigin origin)
+            {
+                return this.stream.Seek(offset, origin);
+            }
+
+            public override void SetLength(long value)
+            {
+                this.stream.SetLength(value);
+            }
+
+            public override void Write(byte[] buffer, int offset, int count)
+            {
+                this.stream.Write(buffer, offset, count);
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                this.stream.Dispose();
+                this.outer?.Dispose();
+                base.Dispose(disposing);
+            }
+
+            public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+            {
+                return this.stream.ReadAsync(buffer, offset, count, cancellationToken);
+            }
+
+            public override Task CopyToAsync(Stream destination, int bufferSize, CancellationToken cancellationToken)
+            {
+                return this.stream.CopyToAsync(destination, bufferSize, cancellationToken);
             }
         }
     }
