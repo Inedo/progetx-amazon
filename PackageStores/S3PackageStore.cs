@@ -100,7 +100,7 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
             {
                 var client = await this.client.ValueAsync.ConfigureAwait(false);
                 var response = await client.GetObjectAsync(this.BucketName, key).ConfigureAwait(false);
-                return new UsingStream(response.ResponseStream, response);
+                return new DownloadStream(response.ResponseStream, response);
             }
             catch (AmazonS3Exception ex) when (ex.StatusCode == HttpStatusCode.NotFound)
             {
@@ -138,7 +138,7 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
 
                 // Try again without catching exceptions.
                 var response = await client.GetObjectAsync(this.BucketName, key).ConfigureAwait(false);
-                return new UsingStream(response.ResponseStream, response);
+                return new DownloadStream(response.ResponseStream, response);
             }
         }
         protected override Task<Stream> CreateAsync(string path)
@@ -460,67 +460,203 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
                 };
             }
         }
-        private sealed class UsingStream : Stream
+        private sealed class DownloadStream : Stream
         {
             private Stream stream;
-            private IDisposable outer;
+            private GetObjectResponse response;
+            private Stream temp;
+            private AutoResetEvent cond;
+            private SemaphoreSlim mutex;
+            private CancellationTokenSource cancellationSource;
+            private Task task;
+            private long readPosition;
+            private long writePosition;
+            private bool disposed;
 
-            public UsingStream(Stream stream, IDisposable outer)
+            public DownloadStream(Stream stream, GetObjectResponse response)
             {
                 this.stream = stream;
-                this.outer = outer;
+                this.response = response;
+                this.temp = TemporaryStream.Create(response.ContentLength);
+                this.cond = new AutoResetEvent(false);
+                this.mutex = new SemaphoreSlim(1, 1);
+                this.cancellationSource = new CancellationTokenSource();
+                this.task = this.CopyFromStreamAsync(this.cancellationSource.Token);
             }
 
-            public override bool CanRead => this.stream.CanRead;
-            public override bool CanSeek => this.stream.CanSeek;
-            public override bool CanWrite => this.stream.CanWrite;
+            private async Task CopyFromStreamAsync(CancellationToken cancellationToken)
+            {
+                var buffer = new byte[4096];
+                while (true)
+                {
+                    var count = await this.stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken);
+                    if (count == 0)
+                    {
+                        return;
+                    }
+
+                    await this.mutex.WaitAsync(cancellationToken);
+                    try
+                    {
+                        await this.temp.WriteAsync(buffer, 0, count, cancellationToken);
+                        this.writePosition += count;
+                    }
+                    finally
+                    {
+                        this.mutex.Release();
+                    }
+
+                    this.cond.Set();
+                }
+            }
+
+            public override bool CanRead => true;
+            public override bool CanSeek => true;
+            public override bool CanWrite => false;
             public override long Length => this.stream.Length;
             public override long Position
             {
-                get { return this.stream.Position; }
-                set { this.stream.Position = value; }
+                get
+                {
+                    this.mutex.Wait();
+                    try
+                    {
+                        return this.readPosition;
+                    }
+                    finally
+                    {
+                        this.mutex.Release();
+                    }
+                }
+                set
+                {
+                    this.mutex.Wait();
+                    try
+                    {
+                        if (value < 0 || this.response.ContentLength < value)
+                        {
+                            throw new ArgumentOutOfRangeException(nameof(Position));
+                        }
+                        this.readPosition = value;
+                    }
+                    finally
+                    {
+                        this.mutex.Release();
+                    }
+                }
             }
 
-            public override void Flush()
-            {
-                this.stream.Flush();
-            }
+            public override void Flush() { }
 
             public override int Read(byte[] buffer, int offset, int count)
             {
-                return this.stream.Read(buffer, offset, count);
+                if (count == 0)
+                {
+                    return 0;
+                }
+
+                while (true)
+                {
+                    this.mutex.Wait();
+                    try
+                    {
+                        if (this.readPosition >= this.response.ContentLength)
+                        {
+                            return 0;
+                        }
+
+                        if (this.writePosition > this.readPosition)
+                        {
+                            this.temp.Position = this.readPosition;
+                            int n = this.temp.Read(buffer, offset, count);
+                            this.readPosition += n;
+                            return n;
+                        }
+                    }
+                    finally
+                    {
+                        this.mutex.Release();
+                    }
+
+                    this.cond.WaitOne();
+                }
+            }
+
+            public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+            {
+                if (count == 0)
+                {
+                    return 0;
+                }
+
+                while (true)
+                {
+                    await this.mutex.WaitAsync(cancellationToken);
+                    try
+                    {
+                        if (this.readPosition >= this.response.ContentLength)
+                        {
+                            return 0;
+                        }
+
+                        if (this.writePosition > this.readPosition)
+                        {
+                            this.temp.Position = this.readPosition;
+                            int n = await this.temp.ReadAsync(buffer, offset, count, cancellationToken);
+                            this.readPosition += n;
+                            return n;
+                        }
+                    }
+                    finally
+                    {
+                        this.mutex.Release();
+                    }
+
+                    await Task.Factory.StartNew(this.cond.WaitOne, cancellationToken, TaskCreationOptions.LongRunning, TaskScheduler.Current);
+                }
             }
 
             public override long Seek(long offset, SeekOrigin origin)
             {
-                return this.stream.Seek(offset, origin);
+                switch (origin)
+                {
+                    case SeekOrigin.Begin:
+                        break;
+                    case SeekOrigin.Current:
+                        offset += this.Position;
+                        break;
+                    case SeekOrigin.End:
+                        offset += this.response.ContentLength;
+                        break;
+                }
+                return this.Position = offset;
             }
 
             public override void SetLength(long value)
             {
-                this.stream.SetLength(value);
+                throw new NotSupportedException();
             }
 
             public override void Write(byte[] buffer, int offset, int count)
             {
-                this.stream.Write(buffer, offset, count);
+                throw new NotSupportedException();
             }
 
             protected override void Dispose(bool disposing)
             {
-                this.stream.Dispose();
-                this.outer?.Dispose();
+                if (!this.disposed)
+                {
+                    this.disposed = true;
+                    this.cancellationSource.Cancel();
+                    this.task.WaitAndUnwrapExceptions();
+                    this.cancellationSource.Dispose();
+                    this.stream.Dispose();
+                    this.response.Dispose();
+                    this.cond.Dispose();
+                    this.mutex.Dispose();
+                    this.temp.Dispose();
+                }
                 base.Dispose(disposing);
-            }
-
-            public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
-            {
-                return this.stream.ReadAsync(buffer, offset, count, cancellationToken);
-            }
-
-            public override Task CopyToAsync(Stream destination, int bufferSize, CancellationToken cancellationToken)
-            {
-                return this.stream.CopyToAsync(destination, bufferSize, cancellationToken);
             }
         }
     }
