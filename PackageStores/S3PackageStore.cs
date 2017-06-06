@@ -648,7 +648,13 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
                 {
                     this.disposed = true;
                     this.cancellationSource.Cancel();
-                    this.task.WaitAndUnwrapExceptions();
+                    try
+                    {
+                        this.task.WaitAndUnwrapExceptions();
+                    }
+                    catch (TaskCanceledException)
+                    {
+                    }
                     this.cancellationSource.Dispose();
                     this.stream.Dispose();
                     this.response.Dispose();
