@@ -513,7 +513,7 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
             public override bool CanRead => true;
             public override bool CanSeek => true;
             public override bool CanWrite => false;
-            public override long Length => this.stream.Length;
+            public override long Length => this.response.ContentLength;
             public override long Position
             {
                 get
