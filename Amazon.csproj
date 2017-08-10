@@ -39,16 +39,19 @@
     <Reference Include="AWSSDK.SecurityToken, Version=3.3.0.0, Culture=neutral, PublicKeyToken=885c28607f98e604, processorArchitecture=MSIL">
       <HintPath>packages\AWSSDK.SecurityToken.3.3.1.5\lib\net45\AWSSDK.SecurityToken.dll</HintPath>
     </Reference>
-    <Reference Include="InedoLib, Version=478.1.0.0, Culture=neutral, PublicKeyToken=112cfb71329714a6, processorArchitecture=MSIL">
-      <HintPath>packages\Inedo.ProGet.SDK.4.6.1\lib\net45\InedoLib.dll</HintPath>
+    <Reference Include="InedoLib, Version=500.6.0.0, Culture=neutral, PublicKeyToken=112cfb71329714a6, processorArchitecture=MSIL">
+      <HintPath>packages\Inedo.ProGet.SDK.4.8.1\lib\net45\InedoLib.dll</HintPath>
+      <SpecificVersion>False</SpecificVersion>
       <Private>False</Private>
     </Reference>
-    <Reference Include="ProGet.Web.Controls, Version=4.6.0.32, Culture=neutral, PublicKeyToken=20535527eaf4e568, processorArchitecture=MSIL">
-      <HintPath>packages\Inedo.ProGet.SDK.4.6.1\lib\net45\ProGet.Web.Controls.dll</HintPath>
+    <Reference Include="ProGet.Web.Controls, Version=4.8.0.15, Culture=neutral, PublicKeyToken=20535527eaf4e568, processorArchitecture=MSIL">
+      <HintPath>packages\Inedo.ProGet.SDK.4.8.1\lib\net45\ProGet.Web.Controls.dll</HintPath>
+      <SpecificVersion>False</SpecificVersion>
       <Private>False</Private>
     </Reference>
-    <Reference Include="ProGetCore, Version=4.6.0.32, Culture=neutral, PublicKeyToken=20535527eaf4e568, processorArchitecture=MSIL">
-      <HintPath>packages\Inedo.ProGet.SDK.4.6.1\lib\net45\ProGetCore.dll</HintPath>
+    <Reference Include="ProGetCore, Version=4.8.0.15, Culture=neutral, PublicKeyToken=20535527eaf4e568, processorArchitecture=MSIL">
+      <HintPath>packages\Inedo.ProGet.SDK.4.8.1\lib\net45\ProGetCore.dll</HintPath>
+      <SpecificVersion>False</SpecificVersion>
       <Private>False</Private>
     </Reference>
     <Reference Include="System" />
@@ -61,8 +64,8 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="PackageStores\S3FileSystem.cs" />
     <Compile Include="PackageStores\S3PackageStore.cs" />
-    <Compile Include="PackageStores\S3PackageStore.Docker.cs" />
     <Compile Include="PackageStores\S3PackageStoreEditor.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
