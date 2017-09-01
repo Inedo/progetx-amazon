@@ -390,10 +390,9 @@ namespace Inedo.ProGet.Extensions.Amazon.PackageStores
                     MaxKeys = 1
                 }).ConfigureAwait(false);
 
-                if (response.S3Objects.Any())
-                {
-                    return new S3FileSystemItem(PathEx.GetFileName(path));
-                }
+                var item = response.S3Objects.FirstOrDefault();
+                if (item != null)
+                    return new S3FileSystemItem(PathEx.GetFileName(path), item.Size);
 
                 return null;
             }
